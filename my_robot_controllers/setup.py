@@ -24,10 +24,10 @@ setup(
     },
     entry_points={
     'console_scripts': [
-        'pure_pursuit = my_robot_controller.pure_pursuit_controller:main',
-        'p_controller = my_robot_controller.p_controller:main',
-        'stanley_controller = my_robot_controller.stanley_controller:main',
-        'mpc_controller = my_robot_controller.mpc_controller:main',
+        'p_controller = my_robot_controllers.p_controller:main',
+        'pure_pursuit = my_robot_controllers.pure_pursuit_controller:main',
+        'stanley_controller = my_robot_controllers.stanley_controller:main',
+        'mpc_controller = my_robot_controllers.mpc_controller:main',
     ],
-}
+},
 )

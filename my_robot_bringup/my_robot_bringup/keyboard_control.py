@@ -27,8 +27,8 @@ class RobotTeleop(Node):
     def control_loop(self):
         """Main loop to read keyboard inputs and send velocity commands."""
         twist = Twist()
-        speed = 0.5
-        turn = 1.0
+        speed = 3.0
+        turn = 3.0
 
         while rclpy.ok():
             key = self.get_key()
@@ -47,7 +47,7 @@ class RobotTeleop(Node):
             elif key == 'q':  # Stop
                 twist.linear.x = 0.0
                 twist.angular.z = 0.0
-            elif key == '':  # CTRL+C
+            else:
                 break
             self.publisher_.publish(twist)
             self.get_logger().info(f"Velocity: linear={twist.linear.x}, angular={twist.angular.z}")

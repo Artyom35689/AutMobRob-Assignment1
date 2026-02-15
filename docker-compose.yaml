@@ -56,3 +56,6 @@ services:
       "/bin/bash","-lc","
       exec bash"
       ]
+
+      # sudo apt update
+      # sudo apt install -y ros-humble-gazebo-plugins ros-humble-gazebo-ros-pkgs
