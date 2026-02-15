@@ -1,3 +1,4 @@
+from glob import glob
 from setuptools import find_packages, setup
 
 package_name = 'my_robot_controllers'
@@ -10,6 +11,8 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
+
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -23,11 +26,13 @@ setup(
         ],
     },
     entry_points={
-    'console_scripts': [
-        'p_controller = my_robot_controllers.p_controller:main',
-        'pure_pursuit = my_robot_controllers.pure_pursuit_controller:main',
-        'stanley_controller = my_robot_controllers.stanley_controller:main',
-        'mpc_controller = my_robot_controllers.mpc_controller:main',
+        'console_scripts': [
+            'p_controller = my_robot_controllers.p_controller:main',
+            'pure_pursuit = my_robot_controllers.pure_pursuit_controller:main',
+            'stanley_controller = my_robot_controllers.stanley_controller:main',
+            'mpc_controller = my_robot_controllers.mpc_controller:main',
+            'odom_plotter = my_robot_controllers.odom_plotter:main',
+            
     ],
 },
 )
