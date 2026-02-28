@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import rclpy
 from rclpy.node import Node
@@ -17,27 +17,45 @@ from my_robot_controllers.controllers_common import (
 )
 
 
+def project_point_to_segment(
+    px: float, py: float,
+    ax: float, ay: float,
+    bx: float, by: float,
+) -> Tuple[float, float]:
+    vx = bx - ax
+    vy = by - ay
+    wx = px - ax
+    wy = py - ay
+
+    vv = vx * vx + vy * vy
+    if vv < 1e-12:
+        return ax, ay
+
+    t = (wx * vx + wy * vy) / vv
+    t = clamp(t, 0.0, 1.0)
+    return ax + t * vx, ay + t * vy
+
+
 class MPCControllerNode(Node):
     def __init__(self) -> None:
         super().__init__("mpc_controller")
 
         # =======================================
-        # SPECIFIC PARAMETERS FOR THIS CONTROLLER
+        # SPECIFIC PARAMETERS
         # =======================================
-        self.horizon = int(self.declare_parameter("horizon", 12).value)
-        self.lookahead_points = int(self.declare_parameter("lookahead_points", 2).value)
+        self.horizon = int(self.declare_parameter("horizon", 15).value)
 
         self.nv = int(self.declare_parameter("nv", 5).value)
         self.nw = int(self.declare_parameter("nw", 11).value)
 
-        self.w_track = float(self.declare_parameter("w_track", 5.0).value)
-        self.w_terminal = float(self.declare_parameter("w_terminal", 20.0).value)
+        self.w_track = float(self.declare_parameter("w_track", 20.0).value)
+        self.w_terminal = float(self.declare_parameter("w_terminal", 60.0).value)
         self.w_u = float(self.declare_parameter("w_u", 0.05).value)
 
         # =====================================
-        # COMMON PARAMETERS FOR ALL CONTROLLERS
+        # COMMON PARAMETERS
         # =====================================
-        self.goal_tolerance = float(self.declare_parameter("goal_tolerance", 0.2).value)
+        self.goal_tolerance = float(self.declare_parameter("goal_tolerance", 0.3).value)
 
         self.odom_topic = self.declare_parameter("odom_topic", "/odom").value
         self.cmd_vel_topic = self.declare_parameter("cmd_vel_topic", "/cmd_vel").value
@@ -63,6 +81,7 @@ class MPCControllerNode(Node):
         self.x: Optional[float] = None
         self.y: Optional[float] = None
         self.yaw: Optional[float] = None
+        self.target_idx = 0
 
         # Candidate grids
         self.v_grid = self._linspace(self.v_min, self.v_max, self.nv)
@@ -72,11 +91,6 @@ class MPCControllerNode(Node):
         self.sub = self.create_subscription(Odometry, self.odom_topic, self.on_odom, 10)
         self.pub = self.create_publisher(Twist, self.cmd_vel_topic, 10)
         self.timer = self.create_timer(self.dt, self.on_timer)
-
-        self.get_logger().info(
-            f"odom={self.odom_topic} cmd_vel={self.cmd_vel_topic} points={len(self.path)} "
-            f"N={self.horizon} dt={self.dt:.3f} nv={self.nv} nw={self.nw}"
-        )
 
     @staticmethod
     def _linspace(a: float, b: float, n: int) -> List[float]:
@@ -100,22 +114,7 @@ class MPCControllerNode(Node):
         self.y = float(p.y)
         self.yaw = yaw_from_quat(q.x, q.y, q.z, q.w)
 
-    def closest_waypoint_idx(self) -> int:
-        """Nearest waypoint index (simple association)."""
-        assert self.x is not None and self.y is not None
-        best_i = 0
-        best_d2 = None
-        for i, (wx, wy) in enumerate(self.path):
-            dx = wx - self.x
-            dy = wy - self.y
-            d2 = dx * dx + dy * dy
-            if best_d2 is None or d2 < best_d2:
-                best_d2 = d2
-                best_i = i
-        return best_i
-
-    def rollout_cost(self, v: float, w: float, tx: float, ty: float) -> float:
-        """Rollout unicycle model with constant (v,w) for horizon steps."""
+    def rollout_cost(self, v: float, w: float) -> float:
         assert self.x is not None and self.y is not None and self.yaw is not None
 
         x = self.x
@@ -123,15 +122,26 @@ class MPCControllerNode(Node):
         yaw = self.yaw
 
         J = 0.0
+
+        # current segment
+        i = clamp(self.target_idx, 0, len(self.path) - 2)
+        i = int(i)
+        ax, ay = self.path[i]
+        bx, by = self.path[i + 1]
+
         for _ in range(self.horizon):
             x += v * math.cos(yaw) * self.dt
             y += v * math.sin(yaw) * self.dt
             yaw = wrap_to_pi(yaw + w * self.dt)
 
-            dx = x - tx
-            dy = y - ty
+            proj_x, proj_y = project_point_to_segment(x, y, ax, ay, bx, by)
+            dx = x - proj_x
+            dy = y - proj_y
+
             J += self.w_track * (dx * dx + dy * dy)
 
+        # terminal cost to next waypoint
+        tx, ty = self.path[min(self.target_idx + 1, len(self.path) - 1)]
         dxT = x - tx
         dyT = y - ty
         J += self.w_terminal * (dxT * dxT + dyT * dyT)
@@ -143,15 +153,18 @@ class MPCControllerNode(Node):
         if self.x is None or self.y is None or self.yaw is None:
             return
 
+        # Final goal check
         gx, gy = self.path[-1]
         if math.hypot(gx - self.x, gy - self.y) <= self.goal_tolerance:
-            self.get_logger().info("Goal reached. Stopping.")
             self.stop()
             return
 
-        i0 = self.closest_waypoint_idx()
-        it = min(i0 + self.lookahead_points, len(self.path) - 1)
-        tx, ty = self.path[it]
+        # Progress gate
+        nx, ny = self.path[min(self.target_idx + 1, len(self.path) - 1)]
+        if math.hypot(nx - self.x, ny - self.y) <= self.goal_tolerance:
+            self.target_idx += 1
+            if self.target_idx >= len(self.path) - 1:
+                return
 
         best_J = None
         best_v = 0.0
@@ -159,7 +172,7 @@ class MPCControllerNode(Node):
 
         for v in self.v_grid:
             for w in self.w_grid:
-                J = self.rollout_cost(v, w, tx, ty)
+                J = self.rollout_cost(v, w)
                 if best_J is None or J < best_J:
                     best_J = J
                     best_v = v

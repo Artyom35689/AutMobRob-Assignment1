@@ -59,7 +59,7 @@ class StanleyControllerNode(Node):
         self.softening = float(self.declare_parameter("softening", 0.3).value)
         self.wheelbase = float(self.declare_parameter("wheelbase", 0.5).value)
 
-        self.v_cmd = float(self.declare_parameter("v_cmd", 0.25).value)
+        self.v_cmd = float(self.declare_parameter("v_cmd", 0.9).value)
 
         # protect tan(delta) on diff-drive mapping
         self.delta_max = float(self.declare_parameter("delta_max", 0.7).value)
@@ -92,6 +92,7 @@ class StanleyControllerNode(Node):
         self.x: Optional[float] = None
         self.y: Optional[float] = None
         self.yaw: Optional[float] = None
+        self.target_idx = 0  # NEW: enforce sequential segment following
 
         # ROS
         self.sub = self.create_subscription(Odometry, self.odom_topic, self.on_odom, 10)
@@ -115,59 +116,64 @@ class StanleyControllerNode(Node):
         self.y = float(p.y)
         self.yaw = yaw_from_quat(q.x, q.y, q.z, q.w)
 
-    def find_closest_segment(self) -> SegmentMatch:
+    def match_current_segment(self) -> SegmentMatch:
         """
-        Classic Stanley prerequisite:
-        find the closest point on the path (global search over segments).
+        Match robot to the CURRENT segment only: path[target_idx] -> path[target_idx+1].
+        Prevents jumping to a later segment on self-intersections / proximity.
         """
         assert self.x is not None and self.y is not None
 
-        best: Optional[SegmentMatch] = None
-        for i in range(0, len(self.path) - 1):
-            ax, ay = self.path[i]
-            bx, by = self.path[i + 1]
+        # Ensure valid segment index
+        i = int(clamp(float(self.target_idx), 0.0, float(max(len(self.path) - 2, 0))))
 
-            proj_x, proj_y = project_point_to_segment(self.x, self.y, ax, ay, bx, by)
-            dist = math.hypot(self.x - proj_x, self.y - proj_y)
+        ax, ay = self.path[i]
+        bx, by = self.path[i + 1]
 
-            seg_dx = bx - ax
-            seg_dy = by - ay
-            path_yaw = math.atan2(seg_dy, seg_dx)
+        proj_x, proj_y = project_point_to_segment(self.x, self.y, ax, ay, bx, by)
+        dist = math.hypot(self.x - proj_x, self.y - proj_y)
 
-            # Signed cross-track error using cross product sign.
-            # cross > 0 => robot is left of segment direction (A->B).
-            cross = seg_dx * (self.y - proj_y) - seg_dy * (self.x - proj_x)
-            sign = 1.0 if cross > 0.0 else -1.0
+        seg_dx = bx - ax
+        seg_dy = by - ay
+        path_yaw = math.atan2(seg_dy, seg_dx)
 
-            # For cmd_vel (w > 0 is left/CCW), we choose CTE sign so that:
-            # left of path -> negative CTE -> steering correction turns right.
-            cte_signed = -sign * dist
+        # Signed cross-track error using cross product sign.
+        # cross > 0 => robot is left of segment direction (A->B).
+        cross = seg_dx * (self.y - proj_y) - seg_dy * (self.x - proj_x)
+        sign = 1.0 if cross > 0.0 else -1.0
 
-            cand = SegmentMatch(
-                seg_idx=i,
-                proj_x=proj_x,
-                proj_y=proj_y,
-                dist=dist,
-                cte_signed=cte_signed,
-                path_yaw=path_yaw,
-            )
-            if best is None or cand.dist < best.dist:
-                best = cand
+        # For cmd_vel (w > 0 is left/CCW), we choose CTE sign so that:
+        # left of path -> negative CTE -> steering correction turns right.
+        cte_signed = -sign * dist
 
-        assert best is not None
-        return best
+        return SegmentMatch(
+            seg_idx=i,
+            proj_x=proj_x,
+            proj_y=proj_y,
+            dist=dist,
+            cte_signed=cte_signed,
+            path_yaw=path_yaw,
+        )
 
     def on_timer(self) -> None:
         if self.x is None or self.y is None or self.yaw is None:
             return
 
-        gx, gy = self.path[-1]
-        if math.hypot(gx - self.x, gy - self.y) <= self.goal_tolerance:
-            self.get_logger().info("Goal reached. Stopping.")
-            self.stop()
+        # If we are at/after the last segment, just check final goal and stop
+        if self.target_idx >= len(self.path) - 1:
+            gx, gy = self.path[-1]
+            if math.hypot(gx - self.x, gy - self.y) <= self.goal_tolerance:
+                self.get_logger().info("Goal reached. Stopping.")
+                self.stop()
             return
 
-        m = self.find_closest_segment()
+        # HARD GATE progress: require reaching the NEXT waypoint before switching segment
+        nx, ny = self.path[self.target_idx + 1]
+        if math.hypot(nx - self.x, ny - self.y) <= self.goal_tolerance:
+            self.target_idx += 1
+            if self.target_idx >= len(self.path) - 1:
+                return
+
+        m = self.match_current_segment()
 
         # Heading error
         heading_err = wrap_to_pi(m.path_yaw - self.yaw)

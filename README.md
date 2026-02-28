@@ -46,7 +46,7 @@ Chooses a **lookahead point** on the path at distance `Ld` and computes curvatur
 - `w = v * kappa`
 Works well for smooth paths; can cut corners if lookahead is too large.
 
-![Pure Pursuit plot](plots/run_pure_pursuit_done_20260215_181649.png)
+![Pure Pursuit plot](plots/run_pure_pursuit_done_20260228_104627.png)
 
 ### Stanley
 Uses:
@@ -56,7 +56,7 @@ Steering:
 - `delta = e_psi + atan2(k * e_cte, v + v0)`
 Then mapped to diff-drive angular velocity via `w = (v/L)*tan(delta)` (with a clamp on `delta`).
 
-![Stanley plot](plots/run_stanley_controller_done_20260215_181733.png)
+![Stanley plot](plots/run_stanley_controller_done_20260228_104953.png)
 
 
 ### MPC (minimal)
@@ -65,7 +65,7 @@ Very simple MPC-like selection:
 - brute-force a small grid of constant `(v,w)` commands for horizon `N`
 - simulate kinematic rollout and choose the lowest cost
 
-![MPC plot](plots/run_mpc_controller_done_20260215_181816.png)
+![MPC plot](plots/run_stanley_controller_done_20260228_104953.png)
 
 ---
 

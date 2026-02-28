@@ -24,8 +24,8 @@ class PurePursuitControllerNode(Node):
         # =======================================
         # SPECIFIC PARAMETERS FOR THIS CONTROLLER
         # =======================================
-        self.lookahead = float(self.declare_parameter("lookahead", 0.8).value)   # Ld
-        self.v_cmd = float(self.declare_parameter("v_cmd", 0.35).value)          # constant speed
+        self.lookahead = float(self.declare_parameter("lookahead", 1.0).value)   # Ld
+        self.v_cmd = float(self.declare_parameter("v_cmd", 0.9).value)          # constant speed
 
         # =====================================
         # COMMON PARAMETERS FOR ALL CONTROLLERS
@@ -55,7 +55,7 @@ class PurePursuitControllerNode(Node):
         self.x: Optional[float] = None
         self.y: Optional[float] = None
         self.yaw: Optional[float] = None
-        self.progress_idx = 0
+        self.target_idx = 0
 
         # ROS
         self.sub = self.create_subscription(Odometry, self.odom_topic, self.on_odom, 10)
@@ -79,45 +79,52 @@ class PurePursuitControllerNode(Node):
         self.y = float(p.y)
         self.yaw = yaw_from_quat(q.x, q.y, q.z, q.w)
 
-    def find_lookahead_point(self) -> Tuple[float, float]:
+    def find_lookahead_point(self, from_idx: int) -> Tuple[float, float]:
         """
-        Choose a path point at distance >= lookahead from current position.
-        We move progress_idx forward so we do not keep aiming behind us.
+        Choose the first path point at distance >= lookahead from current position,
+        searching only forward starting from `from_idx`.
+        This function does NOT modify progress.
         """
         assert self.x is not None and self.y is not None
 
-        # advance progress to avoid "going back"
-        while self.progress_idx + 1 < len(self.path):
-            x0, y0 = self.path[self.progress_idx]
-            x1, y1 = self.path[self.progress_idx + 1]
-            d0 = math.hypot(x0 - self.x, y0 - self.y)
-            d1 = math.hypot(x1 - self.x, y1 - self.y)
-            if d1 < d0:
-                self.progress_idx += 1
-            else:
-                break
-
-        # find first point that is far enough
         ld = max(self.lookahead, 1e-3)
-        for i in range(self.progress_idx, len(self.path)):
+
+        # Search forward only
+        for i in range(max(from_idx, 0), len(self.path)):
             px, py = self.path[i]
             if math.hypot(px - self.x, py - self.y) >= ld:
-                self.progress_idx = i
                 return px, py
 
+        # If none found, fall back to the final waypoint
         return self.path[-1]
 
     def on_timer(self) -> None:
         if self.x is None or self.y is None or self.yaw is None:
             return
 
-        gx, gy = self.path[-1]
-        if math.hypot(gx - self.x, gy - self.y) <= self.goal_tolerance:
-            self.get_logger().info("Goal reached. Stopping.")
+        # If all waypoints completed -> stop
+        if self.target_idx >= len(self.path):
+            self.get_logger().info("Path completed. Stopping.")
             self.stop()
             return
 
-        lx, ly = self.find_lookahead_point()
+        # Current mandatory waypoint
+        tx, ty = self.path[self.target_idx]
+        dist_t = math.hypot(tx - self.x, ty - self.y)
+
+        # HARD GATE:
+        # Until we are within goal_tolerance of the current waypoint,
+        # we aim at it directly (do NOT jump to lookahead / next waypoint).
+        if dist_t > self.goal_tolerance:
+            lx, ly = tx, ty
+        else:
+            # reached current waypoint -> advance
+            self.target_idx += 1
+            if self.target_idx >= len(self.path):
+                self.get_logger().info("Goal reached. Stopping.")
+                self.stop()
+                return
+            lx, ly = self.find_lookahead_point(self.target_idx)
 
         dx = lx - self.x
         dy = ly - self.y
